@@ -1,0 +1,75 @@
+import base64
+import io
+import logging
+import os
+from aiogram import Dispatcher, types
+from db import queries as db
+from bot.ai import get_trade_recommendation
+from bot.keyboards.reply import subscribe_keyboard
+from datetime import datetime, timezone
+
+
+async def handle_photo(message: types.Message):
+    """
+    Хендлер для обробки надісланих фотографій.
+    """
+    user_id = message.from_user.id
+    user = await db.get_user(user_id)
+
+    if not user:
+        await message.answer("Будь ласка, почніть з команди /start, щоб я міг вас зареєструвати.")
+        return
+
+    # Перевіряємо, чи не закінчився термін підписки
+    if user["is_subscribed"] and user["subscription_expires_at"] < datetime.now(timezone.utc):
+        # Тут можна було б оновити статус, але для простоти просто повідомимо
+        await message.answer(
+            "Термін вашої підписки закінчився. Будь ласка, поновіть її, щоб продовжити користуватися ботом.",
+            reply_markup=subscribe_keyboard
+        )
+        return
+
+    # Основна логіка перевірки доступу
+    if not user["is_subscribed"] and user["free_trades_left"] <= 0:
+        await message.answer(
+            "На жаль, ваші безкоштовні спроби закінчилися. "
+            "Щоб продовжити, будь ласка, оформіть підписку.",
+            reply_markup=subscribe_keyboard
+        )
+        return
+
+    processing_message = await message.answer("🔄 Аналізую ваш графік... Це може зайняти до хвилини.")
+
+    try:
+        # Отримуємо файл фотографії
+        photo = message.photo[-1]  # Беремо найбільший розмір
+        file_info = await message.bot.get_file(photo.file_id)
+        
+        # Завантажуємо фото в пам'ять
+        photo_bytes = io.BytesIO()
+        await message.bot.download_file(file_info.file_path, photo_bytes)
+        photo_bytes.seek(0)
+        
+        # Кодуємо в base64
+        base64_image = base64.b64encode(photo_bytes.read()).decode('utf-8')
+        mime_type = "image/jpeg"
+
+        # Отримуємо аналіз від AI
+        analysis_text = await get_trade_recommendation(base64_image, mime_type)
+
+        # Списуємо безкоштовну спробу, якщо це не підписник
+        if not user["is_subscribed"]:
+            await db.use_free_trade(user_id)
+            
+        await message.answer(analysis_text, parse_mode="HTML")
+
+    except Exception as e:
+        logging.error(f"Помилка під час аналізу угоди для користувача {user['user_id']}: {e}")
+        await message.answer("На жаль, сталася помилка під час обробки вашого запиту. Спробуйте ще раз пізніше.")
+    finally:
+        await processing_message.delete()
+
+
+def register_trade_handlers(dp: Dispatcher):
+    """Реєструє хендлери для обробки торгових запитів."""
+    dp.register_message_handler(handle_photo, content_types=["photo"]) 
