@@ -15,6 +15,10 @@ async def get_profile_data(user_id: int):
     is_subscribed = user["is_subscribed"]
     subscription_expires_at = user["subscription_expires_at"]
 
+    # Якщо з бази приходить дата без часової зони, робимо її aware (UTC)
+    if subscription_expires_at and subscription_expires_at.tzinfo is None:
+        subscription_expires_at = subscription_expires_at.replace(tzinfo=timezone.utc)
+
     if is_subscribed and subscription_expires_at and subscription_expires_at < current_time:
         is_subscribed = False
         await db.update_subscription_status(user["user_id"], False)
