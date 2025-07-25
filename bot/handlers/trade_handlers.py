@@ -21,7 +21,11 @@ async def handle_photo(message: types.Message):
         return
 
     # Перевіряємо, чи не закінчився термін підписки
-    if user["is_subscribed"] and user["subscription_expires_at"] < datetime.now(timezone.utc):
+    subscription_expires_at = user["subscription_expires_at"]
+    if subscription_expires_at and subscription_expires_at.tzinfo is None:
+        subscription_expires_at = subscription_expires_at.replace(tzinfo=timezone.utc)
+
+    if user["is_subscribed"] and subscription_expires_at < datetime.now(timezone.utc):
         # Тут можна було б оновити статус, але для простоти просто повідомимо
         await message.answer(
             "Термін вашої підписки закінчився. Будь ласка, поновіть її, щоб продовжити користуватися ботом.",
