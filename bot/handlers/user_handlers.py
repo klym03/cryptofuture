@@ -63,15 +63,47 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name
+    
+    # Перевіряємо чи є реферальний код в команді /start
+    referral_code = None
+    if message.get_args():
+        potential_code = message.get_args().strip()
+        # Перевіряємо чи існує такий реферальний код
+        referral_link = await db.get_referral_link(potential_code)
+        if referral_link:
+            referral_code = potential_code
+            # Додаємо статистику про перехід
+            await db.add_referral_stat(referral_code, user_id, 'click')
 
-    # Додаємо користувача, якщо він новий. ON CONFLICT в SQL подбає про дублікати.
-    await db.add_user(user_id, username, first_name)
+    # Перевіряємо чи користувач вже існує
+    existing_user = await db.get_user(user_id)
+    
+    if not existing_user:
+        # Новий користувач - додаємо з реферальним кодом (якщо є)
+        await db.add_user(user_id, username, first_name, referral_code)
+        
+        # Якщо прийшов по реферальному посиланню, додаємо статистику реєстрації
+        if referral_code:
+            await db.add_referral_stat(referral_code, user_id, 'register')
+    else:
+        # Існуючий користувач - просто оновлюємо дані
+        await db.add_user(user_id, username, first_name)
 
-    await message.answer(
-        f"👋 Привіт, {first_name}!\n\n"
+    # Формуємо привітальне повідомлення
+    welcome_text = f"👋 Привіт, {first_name}!\n\n"
+    
+    if not existing_user and referral_code:
+        # Новий користувач прийшов по реферальному посиланню
+        welcome_text += "🎉 Вітаємо! Ви приєдналися через реферальне посилання.\n\n"
+    
+    welcome_text += (
         "Я ваш особистий AI-помічник для аналізу ф'ючерсних угод. "
         "Надішліть мені фотографію графіка, і я надам технічний аналіз та торгову ідею.\n\n"
-        "У вас є <b>1 безкоштовна спроба</b>, щоб оцінити мої можливості.",
+        "У вас є <b>1 безкоштовна спроба</b>, щоб оцінити мої можливості."
+    )
+
+    await message.answer(
+        welcome_text,
         reply_markup=main_menu_keyboard,
         parse_mode="HTML",
     )

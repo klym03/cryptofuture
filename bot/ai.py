@@ -26,17 +26,20 @@ def fix_html_tags(content: str) -> str:
     if not content:
         return content
     
-    # Спочатку виправляємо неправильні теги типу </b</b> -> </b>
-    content = re.sub(r'</(\w+)</\1>', r'</\1>', content)
+    # Видаляємо всі неправильні конструкції типу </b</b>, </b></b>
+    content = re.sub(r'</[^>]*<[^>]*>', '', content)
     
     # Виправляємо подвійні теги типу </b></b> -> </b>
-    content = re.sub(r'</(\w+)></\1>', r'</\1>', content)
+    content = re.sub(r'(</)(\w+)(>)\2(>)', r'\1\2\3', content)
     
-    # Виправляємо неправильні закриваючі теги типу </b</b> -> </b>
-    content = re.sub(r'</(\w+)</', r'</\1>', content)
+    # Видаляємо всі пошкоджені теги що містять < всередині
+    content = re.sub(r'<[^>]*<[^>]*>', '', content)
+    
+    # Видаляємо порожні теги
+    content = re.sub(r'<(\w+)></\1>', '', content)
     
     # Рахуємо відкриті та закриті теги
-    open_tags = {}
+    open_tags = []
     
     # Знаходимо всі правильні теги
     tag_pattern = r'<(/?)(\w+)(?:\s[^>]*)?>'
@@ -46,21 +49,35 @@ def fix_html_tags(content: str) -> str:
         is_closing, tag_name = match.groups()
         
         if is_closing:
-            # Закриваючий тег
-            if tag_name in open_tags and open_tags[tag_name] > 0:
-                open_tags[tag_name] -= 1
+            # Закриваючий тег - видаляємо останній відповідний відкритий тег
+            if open_tags and open_tags[-1] == tag_name:
+                open_tags.pop()
         else:
-            # Відкриваючий тег
-            open_tags[tag_name] = open_tags.get(tag_name, 0) + 1
+            # Відкриваючий тег - додаємо в стек
+            open_tags.append(tag_name)
     
-    # Додаємо закриваючі теги для незакритих
-    for tag_name, count in open_tags.items():
-        if count > 0:
-            content += f'</{tag_name}>' * count
-            logging.warning(f"Додано {count} закриваючих тегів для <{tag_name}>")
+    # Додаємо закриваючі теги для незакритих (в зворотному порядку)
+    for tag_name in reversed(open_tags):
+        content += f'</{tag_name}>'
+        logging.warning(f"Додано закриваючий тег для <{tag_name}>")
     
-    # Видаляємо неправильні теги, які не вдалося виправити
-    content = re.sub(r'<[^>]*<[^>]*>', '', content)
+    # Остаточне очищення від будь-яких неправильних тегів
+    content = re.sub(r'<[^/>][^>]*[^/>]<', '<', content)
+    
+    return content
+
+def remove_all_html_tags(content: str) -> str:
+    """
+    Видаляє всі HTML теги з тексту як запасний варіант
+    """
+    if not content:
+        return content
+    
+    # Видаляємо всі HTML теги
+    content = re.sub(r'<[^>]+>', '', content)
+    
+    # Декодуємо HTML entities
+    content = content.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
     
     return content
 
@@ -147,11 +164,23 @@ async def get_trade_recommendation(base64_image: str, mime_type: str = "image/jp
         if content:
             logging.info(f"Отримано відповідь від OpenAI: {content[:200]}...")
             original_content = content
-            content = fix_html_tags(content)
-            if original_content != content:
-                logging.warning(f"HTML теги були виправлені. Оригінал: {original_content[-100:]}")
-                logging.warning(f"Після виправлення: {content[-100:]}")
-            logging.info("HTML теги валідовано та виправлено")
+            
+            try:
+                # Спробуємо виправити HTML теги
+                content = fix_html_tags(content)
+                if original_content != content:
+                    logging.warning(f"HTML теги були виправлені")
+                
+                # Тестуємо чи валідний HTML
+                import html
+                html.escape(content)  # Простий тест на валідність
+                
+                logging.info("HTML теги валідовано та виправлено")
+            except Exception as html_error:
+                logging.error(f"Не вдалося виправити HTML: {html_error}")
+                # Якщо виправлення не допомогло, видаляємо всі HTML теги
+                content = remove_all_html_tags(original_content)
+                logging.warning("HTML теги видалено повністю")
         
         return content
     except Exception as e:

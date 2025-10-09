@@ -65,7 +65,24 @@ async def handle_photo(message: types.Message):
         if not user["is_subscribed"]:
             await db.use_free_trade(user_id)
             
-        await message.answer(analysis_text, parse_mode="HTML")
+        # Відправляємо результат з обробкою HTML помилок
+        try:
+            await message.answer(analysis_text, parse_mode="HTML")
+        except Exception as html_error:
+            # Якщо HTML невалідний, спробуємо видалити всі HTML теги і відправити
+            logging.error(f"Помилка HTML форматування: {html_error}")
+            try:
+                from bot.ai import remove_all_html_tags
+                clean_text = remove_all_html_tags(analysis_text)
+                await message.answer(
+                    "🔄 <b>Результат аналізу</b> (форматування спрощено через технічні обмеження):\n\n" + clean_text,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                # Якщо й це не працює, відправляємо зовсім без форматування
+                await message.answer(
+                    "Результат аналізу (без форматування):\n\n" + analysis_text
+                )
 
     except Exception as e:
         logging.error(f"Помилка під час аналізу угоди для користувача {user['user_id']}: {e}")
