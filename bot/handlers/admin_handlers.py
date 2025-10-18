@@ -293,7 +293,7 @@ async def callback_admin_create_referral(callback: types.CallbackQuery, state: F
 
 
 async def process_create_referral(message: types.Message, state: FSMContext):
-    """Обробка створення реферального посилання"""
+    """Обробка створення реферального посилання - етап 1: назва"""
     if not is_admin(message.from_user.id):
         return
     
@@ -308,19 +308,130 @@ async def process_create_referral(message: types.Message, state: FSMContext):
         await state.finish()
         return
     
-    # Створюємо реферальне посилання
-    referral_code = await db.create_referral_link(message.from_user.id, referral_name)
-    bot_username = (await message.bot.get_me()).username
+    # Зберігаємо назву в стан
+    await state.update_data(referral_name=referral_name)
+    
+    # Переходимо до вибору власника
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Прив'язати до користувача", callback_data="ref_bind_user")],
+        [InlineKeyboardButton(text="🌐 Звичайне посилання", callback_data="ref_no_bind")],
+        [InlineKeyboardButton(text="🔙 Скасувати", callback_data="admin_referrals")]
+    ])
+    
+    await AdminStates.waiting_for_referral_owner.set()
+    await message.answer(
+        f"📝 <b>Назва:</b> {referral_name}\n\n"
+        f"❓ <b>Тип посилання:</b>\n"
+        f"Оберіть, чи потрібно прив'язати посилання до конкретного користувача:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+
+async def callback_ref_bind_user(callback: types.CallbackQuery, state: FSMContext):
+    """Обробка вибору прив'язки до користувача"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Доступ заборонено")
+        return
+    
+    await callback.message.edit_text(
+        "👤 <b>Прив'язка до користувача</b>\n\n"
+        "Введіть username користувача (без @) або user_id:",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+async def callback_ref_no_bind(callback: types.CallbackQuery, state: FSMContext):
+    """Обробка створення звичайного посилання"""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("❌ Доступ заборонено")
+        return
+    
+    # Отримуємо назву зі стану
+    data = await state.get_data()
+    referral_name = data.get('referral_name')
+    
+    # Створюємо звичайне посилання (без owner_user_id)
+    referral_code = await db.create_referral_link(callback.from_user.id, referral_name)
+    bot_username = (await callback.bot.get_me()).username
     referral_url = f"https://t.me/{bot_username}?start={referral_code}"
     
-    await message.answer(
-        f"✅ <b>Реферальне посилання створено!</b>\n\n"
+    await callback.message.edit_text(
+        f"✅ <b>Звичайне реферальне посилання створено!</b>\n\n"
         f"📝 Назва: {referral_name}\n"
         f"🔗 Код: <code>{referral_code}</code>\n"
         f"🌐 Посилання: <code>{referral_url}</code>\n\n"
         f"Скопіюйте посилання та поширюйте!",
+        reply_markup=admin_referrals_keyboard,
+        parse_mode="HTML"
+    )
+    await state.finish()
+    await callback.answer()
+
+
+async def process_referral_owner(message: types.Message, state: FSMContext):
+    """Обробка вибору власника реферального посилання"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    user_input = message.text.strip()
+    target_user = None
+    
+    # Спробуємо знайти користувача за username або user_id
+    if user_input.isdigit():
+        target_user = await db.get_user(int(user_input))
+    else:
+        target_user = await db.get_user_by_username(user_input)
+    
+    if not target_user:
+        await message.answer(
+            "❌ Користувача не знайдено!\n\n"
+            "Перевірте правильність введених даних.",
+            reply_markup=admin_referrals_keyboard
+        )
+        await state.finish()
+        return
+    
+    # Отримуємо назву зі стану
+    data = await state.get_data()
+    referral_name = data.get('referral_name')
+    
+    # Створюємо посилання прив'язане до користувача
+    referral_code = await db.create_referral_link(
+        message.from_user.id, 
+        referral_name,
+        owner_user_id=target_user['user_id']
+    )
+    bot_username = (await message.bot.get_me()).username
+    referral_url = f"https://t.me/{bot_username}?start={referral_code}"
+    
+    username_display = f"@{target_user['username']}" if target_user['username'] else f"ID: {target_user['user_id']}"
+    
+    await message.answer(
+        f"✅ <b>Персональне реферальне посилання створено!</b>\n\n"
+        f"📝 Назва: {referral_name}\n"
+        f"👤 Власник: {username_display} ({target_user['first_name']})\n"
+        f"🔗 Код: <code>{referral_code}</code>\n"
+        f"🌐 Посилання: <code>{referral_url}</code>\n\n"
+        f"💡 Користувач зможе переглядати своїх рефералів через команду /my_referals",
         reply_markup=admin_referrals_keyboard
     )
+    
+    # Повідомляємо користувача
+    try:
+        await message.bot.send_message(
+            target_user['user_id'],
+            f"🎉 <b>Вітаємо!</b>\n\n"
+            f"Для вас створено персональне реферальне посилання!\n\n"
+            f"📝 Назва: {referral_name}\n"
+            f"🔗 Ваше посилання: <code>{referral_url}</code>\n\n"
+            f"Використовуйте команду /my_referals для перегляду статистики."
+        )
+    except:
+        pass  # Користувач заблокував бота
+    
     await state.finish()
 
 
@@ -554,8 +665,13 @@ def register_admin_handlers(dp):
     dp.register_callback_query_handler(callback_admin_toggle_referral, Text(startswith="admin_toggle_referral_"))
     dp.register_callback_query_handler(callback_admin_copy_referral, Text(startswith="admin_copy_referral_"))
     
+    # Callback для створення реферальних посилань
+    dp.register_callback_query_handler(callback_ref_bind_user, Text("ref_bind_user"), state=AdminStates.waiting_for_referral_owner)
+    dp.register_callback_query_handler(callback_ref_no_bind, Text("ref_no_bind"), state=AdminStates.waiting_for_referral_owner)
+    
     # Обробка станів
     dp.register_message_handler(process_grant_subscription, state=AdminStates.waiting_for_grant_subscription_user)
     dp.register_message_handler(process_grant_tries, state=AdminStates.waiting_for_grant_tries_user)
     dp.register_message_handler(process_user_search, state=AdminStates.waiting_for_user_search)
-    dp.register_message_handler(process_create_referral, state=AdminStates.waiting_for_referral_name) 
+    dp.register_message_handler(process_create_referral, state=AdminStates.waiting_for_referral_name)
+    dp.register_message_handler(process_referral_owner, state=AdminStates.waiting_for_referral_owner) 

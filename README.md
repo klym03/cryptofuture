@@ -130,6 +130,7 @@ cryptoFuture/
 1. Перевірте логи: `docker-compose logs -f bot`
 2. Перевірте статус БД: `docker-compose exec postgres pg_isready`
 3. Перезапустіть сервіси: `docker-compose restart`
+4. Зверніться до менеджера: @nin_0009
 
 ## Безпека
 

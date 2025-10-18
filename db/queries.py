@@ -31,10 +31,11 @@ async def create_tables():
                 user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                free_trades_left INT DEFAULT 1,
+                free_trades_left INT DEFAULT 3,
                 is_subscribed BOOLEAN DEFAULT FALSE,
                 subscription_expires_at TIMESTAMP,
                 referral_code TEXT,
+                user_referral_code TEXT UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -52,6 +53,18 @@ async def create_tables():
         except Exception:
             pass  # Колонка вже існує
         
+        # Додаємо колонку user_referral_code якщо її немає (для існуючих БД)
+        try:
+            await conn.execute("ALTER TABLE users ADD COLUMN user_referral_code TEXT UNIQUE")
+        except Exception:
+            pass  # Колонка вже існує
+        
+        # Додаємо колонку owner_user_id для referral_links якщо її немає
+        try:
+            await conn.execute("ALTER TABLE referral_links ADD COLUMN owner_user_id BIGINT")
+        except Exception:
+            pass  # Колонка вже існує
+        
         # Створення таблиці реферальних посилань
         await conn.execute(
             """
@@ -60,6 +73,7 @@ async def create_tables():
                 code TEXT UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 admin_id BIGINT NOT NULL,
+                owner_user_id BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_active BOOLEAN DEFAULT TRUE
             )
@@ -83,6 +97,7 @@ async def create_tables():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(is_subscribed, subscription_expires_at)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_user_referral_code ON users(user_referral_code)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_referral_links_code ON referral_links(code)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_referral_links_admin ON referral_links(admin_id)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_referral_stats_code ON referral_stats(referral_code)")
@@ -101,7 +116,7 @@ async def add_user(user_id: int, username: str, first_name: str, referral_code: 
             """
             INSERT INTO users (user_id, username, first_name, referral_code) 
             VALUES ($1, $2, $3, $4) 
-            ON CONFLICT (user_id) DO NOTHING
+            ON CONFLICT (user_id) DO UPDATE SET username = $2, first_name = $3
             """,
             user_id,
             username,
@@ -148,19 +163,33 @@ def generate_referral_code(length: int = 8) -> str:
     """Генерує випадковий реферальний код"""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-async def create_referral_link(admin_id: int, name: str) -> str:
-    """Створює новий реферальний код"""
+async def generate_user_referral_code(user_id: int) -> str:
+    """Генерує унікальний реферальний код для користувача"""
+    # Використовуємо user_id + випадкові символи для унікальності
+    random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    return f"U{user_id}_{random_suffix}"
+
+async def create_referral_link(admin_id: int, name: str, owner_user_id: int = None) -> str:
+    """Створює новий реферальний код з можливістю прив'язки до користувача"""
     async with pool.acquire() as conn:
         while True:
             code = generate_referral_code()
             try:
                 await conn.execute(
                     """
-                    INSERT INTO referral_links (code, name, admin_id)
-                    VALUES ($1, $2, $3)
+                    INSERT INTO referral_links (code, name, admin_id, owner_user_id)
+                    VALUES ($1, $2, $3, $4)
                     """,
-                    code, name, admin_id
+                    code, name, admin_id, owner_user_id
                 )
+                
+                # Якщо посилання прив'язане до користувача, оновлюємо його user_referral_code
+                if owner_user_id:
+                    await conn.execute(
+                        "UPDATE users SET user_referral_code = $1 WHERE user_id = $2",
+                        code, owner_user_id
+                    )
+                
                 return code
             except asyncpg.UniqueViolationError:
                 # Якщо код вже існує, генеруємо новий
@@ -232,6 +261,93 @@ async def get_referral_stats_summary(admin_id: int):
             admin_id
         )
         return dict(stats) if stats else {"total_links": 0, "total_registrations": 0, "total_subscriptions": 0}
+
+# =============== КОРИСТУВАЦЬКА РЕФЕРАЛЬНА СИСТЕМА ===============
+
+async def get_user_referrals(user_id: int):
+    """Отримує список рефералів користувача"""
+    async with pool.acquire() as conn:
+        # Знаходимо реферальне посилання прив'язане до користувача
+        link = await conn.fetchrow(
+            "SELECT code FROM referral_links WHERE owner_user_id = $1 AND is_active = TRUE",
+            user_id
+        )
+        
+        if not link:
+            return []
+        
+        ref_code = link['code']
+        
+        # Отримуємо всіх користувачів, які прийшли за цим кодом
+        referrals = await conn.fetch(
+            """
+            SELECT user_id, username, first_name, is_subscribed, created_at
+            FROM users
+            WHERE referral_code = $1
+            ORDER BY created_at DESC
+            """,
+            ref_code
+        )
+        return [dict(ref) for ref in referrals]
+
+async def get_user_referral_stats(user_id: int):
+    """Отримує статистику рефералів користувача"""
+    async with pool.acquire() as conn:
+        # Знаходимо реферальне посилання прив'язане до користувача
+        link = await conn.fetchrow(
+            "SELECT code, name FROM referral_links WHERE owner_user_id = $1 AND is_active = TRUE",
+            user_id
+        )
+        
+        if not link:
+            return {
+                "has_referral_link": False,
+                "referral_code": None,
+                "referral_name": None,
+                "total_referrals": 0,
+                "subscribed_referrals": 0
+            }
+        
+        ref_code = link['code']
+        
+        # Рахуємо загальну кількість рефералів
+        total_referrals = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE referral_code = $1",
+            ref_code
+        )
+        
+        # Рахуємо рефералів з підпискою
+        subscribed_referrals = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE referral_code = $1 AND is_subscribed = TRUE",
+            ref_code
+        )
+        
+        return {
+            "has_referral_link": True,
+            "referral_code": ref_code,
+            "referral_name": link['name'],
+            "total_referrals": total_referrals or 0,
+            "subscribed_referrals": subscribed_referrals or 0
+        }
+
+async def get_user_by_referral_code(referral_code: str):
+    """Перевіряє чи існує користувач з таким реферальним кодом (через referral_links)"""
+    async with pool.acquire() as conn:
+        # Шукаємо посилання з цим кодом та owner_user_id
+        link = await conn.fetchrow(
+            "SELECT owner_user_id FROM referral_links WHERE code = $1 AND owner_user_id IS NOT NULL",
+            referral_code
+        )
+        
+        if not link or not link['owner_user_id']:
+            return None
+        
+        # Отримуємо інформацію про власника
+        user = await conn.fetchrow(
+            "SELECT user_id, username, first_name FROM users WHERE user_id = $1",
+            link['owner_user_id']
+        )
+        return dict(user) if user else None
 
 # =============== АДМІН ФУНКЦІЇ ===============
 

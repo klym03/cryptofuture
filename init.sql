@@ -3,10 +3,11 @@ CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
     username TEXT,
     first_name TEXT,
-    free_trades_left INT DEFAULT 1,
+    free_trades_left INT DEFAULT 3,
     is_subscribed BOOLEAN DEFAULT FALSE,
     subscription_expires_at TIMESTAMP,
     referral_code TEXT, -- реферальний код через який прийшов користувач
+    user_referral_code TEXT UNIQUE, -- власний реферальний код користувача
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -14,8 +15,9 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS referral_links (
     id SERIAL PRIMARY KEY,
     code TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL, -- назва/опис силки
+    name TEXT NOT NULL, -- назва/опис посилання
     admin_id BIGINT NOT NULL,
+    owner_user_id BIGINT, -- якщо прив'язане до користувача
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE
 );
@@ -35,6 +37,7 @@ CREATE TABLE IF NOT EXISTS referral_stats (
 CREATE INDEX IF NOT EXISTS idx_users_subscription ON users(is_subscribed, subscription_expires_at);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
 CREATE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code);
+CREATE INDEX IF NOT EXISTS idx_users_user_referral_code ON users(user_referral_code);
 CREATE INDEX IF NOT EXISTS idx_referral_links_code ON referral_links(code);
 CREATE INDEX IF NOT EXISTS idx_referral_links_admin ON referral_links(admin_id);
 CREATE INDEX IF NOT EXISTS idx_referral_stats_code ON referral_stats(referral_code);

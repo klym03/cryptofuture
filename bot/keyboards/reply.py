@@ -6,6 +6,9 @@ main_menu_keyboard = ReplyKeyboardMarkup(
             KeyboardButton(text="👤 Профіль"),
             KeyboardButton(text="💡 Допомога з угодою"),
         ],
+        [
+            KeyboardButton(text="🔗 Мої реферали"),
+        ],
     ],
     resize_keyboard=True
 )

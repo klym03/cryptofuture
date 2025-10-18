@@ -66,14 +66,26 @@ async def cmd_start(message: types.Message):
     
     # Перевіряємо чи є реферальний код в команді /start
     referral_code = None
+    is_admin_referral = False
+    is_user_referral = False
+    
     if message.get_args():
         potential_code = message.get_args().strip()
-        # Перевіряємо чи існує такий реферальний код
+        
+        # Спочатку перевіряємо чи це адмінське посилання
         referral_link = await db.get_referral_link(potential_code)
         if referral_link:
             referral_code = potential_code
+            is_admin_referral = True
             # Додаємо статистику про перехід
             await db.add_referral_stat(referral_code, user_id, 'click')
+        else:
+            # Якщо не адмінське, перевіряємо чи це користувацьке посилання
+            # Користувацькі коди мають формат U{user_id}_{random}
+            user_by_ref = await db.get_user_by_referral_code(potential_code)
+            if user_by_ref:
+                referral_code = potential_code
+                is_user_referral = True
 
     # Перевіряємо чи користувач вже існує
     existing_user = await db.get_user(user_id)
@@ -83,7 +95,7 @@ async def cmd_start(message: types.Message):
         await db.add_user(user_id, username, first_name, referral_code)
         
         # Якщо прийшов по реферальному посиланню, додаємо статистику реєстрації
-        if referral_code:
+        if referral_code and is_admin_referral:
             await db.add_referral_stat(referral_code, user_id, 'register')
     else:
         # Існуючий користувач - просто оновлюємо дані
@@ -94,12 +106,15 @@ async def cmd_start(message: types.Message):
     
     if not existing_user and referral_code:
         # Новий користувач прийшов по реферальному посиланню
-        welcome_text += "🎉 Вітаємо! Ви приєдналися через реферальне посилання.\n\n"
+        if is_user_referral:
+            welcome_text += "🎉 Вітаємо! Ви приєдналися через запрошення від друга.\n\n"
+        else:
+            welcome_text += "🎉 Вітаємо! Ви приєдналися через реферальне посилання.\n\n"
     
     welcome_text += (
         "Я ваш особистий AI-помічник для аналізу ф'ючерсних угод. "
         "Надішліть мені фотографію графіка, і я надам технічний аналіз та торгову ідею.\n\n"
-        "У вас є <b>1 безкоштовна спроба</b>, щоб оцінити мої можливості."
+        "У вас є <b>3 безкоштовні спроби</b>, щоб оцінити мої можливості."
     )
 
     await message.answer(
@@ -148,7 +163,64 @@ async def cmd_trade(message: types.Message):
     )
 
 
+async def cmd_my_referrals(message: types.Message):
+    """Обробник команди /my_referals"""
+    user_id = message.from_user.id
+    
+    # Отримуємо статистику
+    stats = await db.get_user_referral_stats(user_id)
+    
+    # Перевіряємо чи є у користувача реферальне посилання
+    if not stats['has_referral_link']:
+        await message.answer(
+            "🔗 <b>Реферальна програма</b>\n\n"
+            "❌ У вас ще немає реферального посилання.\n\n"
+            "💡 <b>Як отримати посилання:</b>\n"
+            "Зверніться до нашого менеджера @nin_0009 для створення вашого персонального реферального посилання.\n\n"
+            "🎁 <b>Переваги реферальної програми:</b>\n"
+            "▫️ Отримуйте винагороди за запрошених друзів\n"
+            "▫️ Відстежуйте статистику рефералів\n"
+            "▫️ Мотивуйте друзів оформити підписку",
+            parse_mode="HTML"
+        )
+        return
+    
+    # Отримуємо список рефералів
+    referrals = await db.get_user_referrals(user_id)
+    
+    # Формуємо посилання
+    bot_info = await message.bot.get_me()
+    referral_url = f"https://t.me/{bot_info.username}?start={stats['referral_code']}"
+    
+    # Формуємо текст відповіді
+    response = f"🔗 <b>Ваша реферальна програма</b>\n\n"
+    response += f"📝 <b>Назва:</b> {stats['referral_name']}\n\n"
+    response += f"📊 <b>Статистика:</b>\n"
+    response += f"👥 Всього рефералів: <b>{stats['total_referrals']}</b>\n"
+    response += f"💎 З підпискою: <b>{stats['subscribed_referrals']}</b>\n\n"
+    
+    response += f"🌐 <b>Ваше реферальне посилання:</b>\n"
+    response += f"<code>{referral_url}</code>\n\n"
+    
+    if referrals:
+        response += f"👥 <b>Ваші реферали ({len(referrals)}):</b>\n\n"
+        for i, ref in enumerate(referrals[:10], 1):  # Показуємо перших 10
+            username_display = f"@{ref['username']}" if ref['username'] else ref['first_name']
+            subscription_status = "💎" if ref['is_subscribed'] else "👤"
+            date_str = ref['created_at'].strftime('%d.%m.%Y')
+            response += f"{i}. {subscription_status} {username_display} ({date_str})\n"
+        
+        if len(referrals) > 10:
+            response += f"\n<i>... та ще {len(referrals) - 10}</i>\n"
+    else:
+        response += f"📝 У вас поки немає рефералів.\n"
+        response += f"Поділіться посиланням, щоб запросити друзів!"
+    
+    await message.answer(response, parse_mode="HTML")
+
+
 def register_user_handlers(dp: Dispatcher):
     dp.register_message_handler(cmd_start, commands=["start"])
     dp.register_message_handler(cmd_profile, text="👤 Профіль")
-    dp.register_message_handler(cmd_trade, text="💡 Допомога з угодою") 
+    dp.register_message_handler(cmd_trade, text="💡 Допомога з угодою")
+    dp.register_message_handler(cmd_my_referrals, commands=["my_referals"]) 
