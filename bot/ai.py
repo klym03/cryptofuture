@@ -150,7 +150,7 @@ async def get_trade_recommendation(base64_image: str, mime_type: str = "image/jp
                     ],
                 }
             ],
-            max_tokens=500,
+            max_tokens=1500,
         )
         content = response.choices[0].message.content
         
